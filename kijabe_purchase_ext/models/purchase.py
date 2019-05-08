@@ -39,11 +39,11 @@ class purchase(models.Model):
 
             for user in users:
                 # call the method to send emails
-                self._send_mail(user.login, self[0].name, user.name,base_url)
+                self._send_mail(user.login, self[0].name, user.name, base_url)
         return True
 
-    # Send email
-    def _send_mail(self, recipient, po, name,url):
+    # Send email method
+    def _send_mail(self, recipient, po, name, url):
         mail_pool = self.env['mail.mail']
         values = {}
         values.update({'subject': 'Purchase Order #' +
@@ -54,7 +54,5 @@ class purchase(models.Model):
                        'To Manager ' + name + ',<br>'
                        + 'LPO No. ' + po + ' has been created and requires your approval. You can find the details to approve here. '+url})
 
-        msg_id = mail_pool.create(values)
-        if msg_id:
-            result = msg_id.send()
+        self.env['mail.mail'].create(values).send()
         return True
