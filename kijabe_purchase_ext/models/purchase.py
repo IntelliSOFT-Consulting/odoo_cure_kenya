@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api
-
+import logging
+_logger = logging.getLogger(__name__)
 # This class inherit purchase.order model by
 # 1) Adding new fields and modifying fields display name
 # 2) Send email notification to managers of purchase order need to be approved
@@ -24,26 +25,37 @@ class purchase(models.Model):
     partner_id = fields.Many2one(string=u'Supplier')
     partner_ref = fields.Char(string=u'Supplier Code')
 
-    # Confirm order and send notification to managers
+
+
+    # Confirm order
     @api.multi
     def button_confirm(self):
         super(purchase, self).button_confirm()  # confirm order
+        self.notify()
+        return True
+
+    # Send notification
+    @api.multi
+    def notify(self):
         # get current url
         base_url = self.env['ir.config_parameter'].get_param('web.base.url')
         if self.state == 'to approve':
+            category = self.env["ir.module.category"].search([['id', '=', 35]]) # purchase category id is 35
             # get groups of 'Manager' in res.groups
-            groups = self.env['res.groups'].search([['name', '=', "Manager"]])
+            groups = self.env['res.groups'].search([['name', '=', "Manager"],['category_id','=',category.id]])
             for group in groups:
                 users = self.env["res.users"].search([['groups_id', '=', group.id], [
                     'active', '=', True]])  # get active users who belong in the group ids
 
             for user in users:
                 # call the method to send emails
-                self._send_mail(user.login, self[0].name, user.name, base_url)
+                _logger.error("Mail to: " + str(user.login))
+                self.send(user.login, self[0].name, user.name, base_url)
         return True
 
     # Send email method
-    def _send_mail(self, recipient, po, name, url):
+    @api.multi
+    def send(self, recipient, po, name, url):
         mail_pool = self.env['mail.mail']
         values = {}
         values.update({'subject': 'Purchase Order #' +
