@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api
+from odoo.exceptions import UserError, ValidationError
+
 import logging
 _logger = logging.getLogger(__name__)
-# This class inherit purchase.order model by
-# 1) Adding new fields and modifying fields display name
-# 2) Send email notification to managers of purchase order need to be approved
-
-
+''' 
+This class inherit purchase.order model
+Main feature:
+1) Adding new fields and modifying fields display name
+2) After confim button clicked, send email notification to Procurement manager requesting approval and 
+   procurement manager approve the LPO, send notification to Finance manager requesting approval and the initiator,
+   Finanace manager approve the LPO, check for double validation process, and send to ED for approval 
+   if the amount exceed the amount set in double validation, otherwise approve the LPO by Finance and notify the initiator.
+'''
 class purchase(models.Model):
     _inherit = 'purchase.order'
     # Add new field
@@ -24,38 +30,85 @@ class purchase(models.Model):
     # Modify existing fields display name
     partner_id = fields.Many2one(string=u'Supplier')
     partner_ref = fields.Char(string=u'Supplier Code')
+    state = fields.Selection([
+        ('draft', 'RFQ'),
+        ('sent', 'RFQ Sent'),
+        ('p_m_approve', 'To Procurement'),
+        ('f_m_approve', 'To Finance'),
+        ('ceo_approve', 'To ED'),
+        ('purchase', 'Purchase Order'),
+        ('done', 'Locked'),
+        ('cancel', 'Cancelled')
+    ], string='Status', readonly=True, index=True, copy=False, default='draft', track_visibility='onchange')
 
+    @api.one
+    def executive_director_approval(self):
+        _logger.error(
+            "In executive_director_approval: state is: " + str(self.state))
+        super(purchase, self).button_approve()
+        self.notifyInitiator("Executive Director")
+        return True
 
+    @api.one
+    def financial_manager_approval(self):
+        for order in self:
+            if order.state != 'f_m_approve':
+                continue
+            order._add_supplier_to_product()
+            # Deal with double validation process
+            if order.company_id.po_double_validation == 'one_step'\
+                    or (order.company_id.po_double_validation == 'two_step'
+                        and order.amount_total < self.env.user.company_id.currency_id.compute(order.company_id.po_double_validation_amount, order.currency_id))\
+                    or order.user_has_groups('purchase.group_purchase_manager'):
+                order.button_approve()
+                self.notifyInitiator("Finance Manager")
+            else:
+                order.write({'state': 'ceo_approve','date_approve': fields.Date.context_today(self)})
+                self.notifyUserInGroup(63)
+                self.notifyInitiator("Finance Manager")
 
-    # Confirm order
+        return True
+
+    @api.one
+    def procurement_manager_approval(self):
+        self.write({'state': 'f_m_approve','date_approve': fields.Date.context_today(self)})
+        self.notifyUserInGroup(62)
+        self.notifyInitiator("Procurement Manager")
+        return True
+
+    @api.multi
+    def send_to_procurement(self):
+        self.write({'state': 'p_m_approve','date_approve': fields.Date.context_today(self)})
+        self.notifyUserInGroup(61)
+        return True
+
     @api.multi
     def button_confirm(self):
-        super(purchase, self).button_confirm()  # confirm order
-        self.notify()
+        for order in self:
+            if order.state in ['draft', 'sent']:
+                self.send_to_procurement()
+
+        return True
+        
+    @api.multi
+    def notifyUserInGroup(self, groupId):
+        group = self.env['res.groups'].search([['id', '=', groupId]])
+        users = self.env["res.users"].search([['groups_id', '=', group.id], ['active', '=', True]])
+        for user in users:
+            _logger.error("notifyUserInGroup - Mail to: " + str(user.login))
+            self.sendToManager(user.login, self[0].name, user.name)
+        return True
+        
+    @api.multi
+    def notifyInitiator(self,approver):
+        user = self.env["res.users"].search([['id', '=', self[0].create_uid.id]])
+        _logger.error("notifyInitiator() - Mail to: " + str(user.login))
+        self.sendToInitiator(user.login, self[0].name, user.name,approver)
         return True
 
-    # Send notification
     @api.multi
-    def notify(self):
-        # get current url
-        base_url = self.env['ir.config_parameter'].get_param('web.base.url')
-        if self.state == 'to approve':
-            category = self.env["ir.module.category"].search([['id', '=', 35]]) # purchase category id is 35
-            # get groups of 'Manager' in res.groups
-            groups = self.env['res.groups'].search([['name', '=', "Manager"],['category_id','=',category.id]])
-            for group in groups:
-                users = self.env["res.users"].search([['groups_id', '=', group.id], [
-                    'active', '=', True]])  # get active users who belong in the group ids
-
-            for user in users:
-                # call the method to send emails
-                _logger.error("Mail to: " + str(user.login))
-                self.send(user.login, self[0].name, user.name, base_url)
-        return True
-
-    # Send email method
-    @api.multi
-    def send(self, recipient, po, name, url):
+    def sendToManager(self, recipient, po, name):
+        url = self.env['ir.config_parameter'].get_param('web.base.url')
         mail_pool = self.env['mail.mail']
         values = {}
         values.update({'subject': 'Purchase Order #' +
@@ -65,6 +118,22 @@ class purchase(models.Model):
         values.update({'body_html':
                        'To Manager ' + name + ',<br>'
                        + 'LPO No. ' + po + ' has been created and requires your approval. You can find the details to approve here. '+url})
+
+        self.env['mail.mail'].create(values).send()
+        return True
+
+    @api.multi
+    def sendToInitiator(self, recipient, po, name,approver):
+        url = self.env['ir.config_parameter'].get_param('web.base.url')
+        mail_pool = self.env['mail.mail']
+        values = {}
+        values.update({'subject': 'Purchase order #' +
+                       po + ' approved'})
+        values.update({'email_from': "odoomail.service@gmail.com"})
+        values.update({'email_to': recipient})
+        values.update({'body_html':
+                       'To ' + name + ',<br>'
+                       + 'LPO No. ' + po + ' has been Approved by '+ str(approver)+'. You can find the details: '+url})
 
         self.env['mail.mail'].create(values).send()
         return True

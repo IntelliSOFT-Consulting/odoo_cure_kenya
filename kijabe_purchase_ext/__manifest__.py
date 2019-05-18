@@ -7,6 +7,7 @@
     'website':'https://cure.org/',
     'data': 
         [
+            'security/purchase_groups.xml',
             'views/kijabe_purchase_ext_view.xml'
         ],
 }
