@@ -35,6 +35,7 @@ class purchase(models.Model):
         ('sent', 'RFQ Sent'),
         ('p_m_approve', 'To Procurement'),
         ('f_m_approve', 'To Finance'),
+        ('o_m_approve','To Operations'),
         ('ceo_approve', 'To ED'),
         ('purchase', 'Purchase Order'),
         ('done', 'Locked'),
@@ -43,16 +44,14 @@ class purchase(models.Model):
 
     @api.one
     def executive_director_approval(self):
-        _logger.error(
-            "In executive_director_approval: state is: " + str(self.state))
         super(purchase, self).button_approve()
         self.notifyInitiator("Executive Director")
         return True
 
     @api.one
-    def financial_manager_approval(self):
+    def operations_manager_approval(self):
         for order in self:
-            if order.state != 'f_m_approve':
+            if order.state != 'o_m_approve':
                 continue
             order._add_supplier_to_product()
             # Deal with double validation process
@@ -61,48 +60,46 @@ class purchase(models.Model):
                         and order.amount_total < self.env.user.company_id.currency_id.compute(order.company_id.po_double_validation_amount, order.currency_id))\
                     or order.user_has_groups('purchase.group_purchase_manager'):
                 order.button_approve()
-                self.notifyInitiator("Finance Manager")
+                self.notifyInitiator("Operations Manager")
             else:
                 order.write({'state': 'ceo_approve','date_approve': fields.Date.context_today(self)})
-                self.notifyUserInGroup(63)
-                self.notifyInitiator("Finance Manager")
+                self.notifyUserInGroup("kijabe_purchase_ext.purchase_director_id")
+                self.notifyInitiator("Operations Manager")
 
+        return True
+    @api.one
+    def financial_manager_approval(self):
+        self.write({'state': 'o_m_approve','date_approve': fields.Date.context_today(self)})
+        self.notifyUserInGroup("kijabe_purchase_ext.purchase_operation_id")
+        self.notifyInitiator("Financial Manager")
         return True
 
     @api.one
     def procurement_manager_approval(self):
         self.write({'state': 'f_m_approve','date_approve': fields.Date.context_today(self)})
-        self.notifyUserInGroup(62)
+        self.notifyUserInGroup("kijabe_purchase_ext.purchase_finance_id")
         self.notifyInitiator("Procurement Manager")
-        return True
-
-    @api.multi
-    def send_to_procurement(self):
-        self.write({'state': 'p_m_approve','date_approve': fields.Date.context_today(self)})
-        self.notifyUserInGroup(61)
         return True
 
     @api.multi
     def button_confirm(self):
         for order in self:
             if order.state in ['draft', 'sent']:
-                self.send_to_procurement()
-
+                self.write({'state': 'p_m_approve','date_approve': fields.Date.context_today(self)})
+                self.notifyUserInGroup("kijabe_purchase_ext.purchase_leader_procurement_id")
         return True
         
     @api.multi
-    def notifyUserInGroup(self, groupId):
-        group = self.env['res.groups'].search([['id', '=', groupId]])
-        users = self.env["res.users"].search([['groups_id', '=', group.id], ['active', '=', True]])
-        for user in users:
-            _logger.error("notifyUserInGroup - Mail to: " + str(user.login))
+    def notifyUserInGroup(self,group_ext_id):
+        group = self.env.ref(group_ext_id)
+        for user in group.users:
+            _logger.error("Notify User `%s` In Group `%s`" %(str(user.login), group.name))
             self.sendToManager(user.login, self[0].name, user.name)
         return True
-        
+
     @api.multi
     def notifyInitiator(self,approver):
         user = self.env["res.users"].search([['id', '=', self[0].create_uid.id]])
-        _logger.error("notifyInitiator() - Mail to: " + str(user.login))
         self.sendToInitiator(user.login, self[0].name, user.name,approver)
         return True
 
